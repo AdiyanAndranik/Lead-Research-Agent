@@ -1,0 +1,34 @@
+# Web framework
+fastapi
+uvicorn[standard]
+
+# Database
+sqlalchemy[asyncio]
+asyncpg
+alembic
+psycopg2-binary
+
+# Config & environment
+pydantic-settings
+python-dotenv
+
+# Task queue
+celery[redis]
+redis
+
+# HTTP client (for scraping & API calls)
+httpx
+playwright
+beautifulsoup4
+lxml
+
+# LLM & agent
+langchain
+langchain-groq
+langgraph
+langsmith
+
+# Utilities
+python-multipart
+tenacity
+structlog

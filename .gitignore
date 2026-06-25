@@ -63,3 +63,6 @@ frontend/.env
 celerybeat-schedule
 celerybeat.pid
 
+alembic.ini
+uv.lock
+alembic/
