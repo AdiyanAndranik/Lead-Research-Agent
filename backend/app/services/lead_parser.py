@@ -227,11 +227,14 @@ def run_parser(
     text: str | None = None,
     csv_content: bytes | None = None,
     json_data: list[dict] | None = None,
+    validate_dns: bool = False,
 ) -> ParseResult:
     """
     Main entry point. Accepts any one input format,
-    parses it, deduplicates, and returns a ParseResult.
+    parses, deduplicates, normalizes, and returns a ParseResult.
     """
+    from backend.app.services.lead_normalizer import normalize_batch
+
     if text is not None:
         raw_leads = parse_text_input(text)
     elif csv_content is not None:
@@ -244,10 +247,15 @@ def run_parser(
     total_submitted = len(raw_leads)
     unique_leads, duplicates_removed = deduplicate(raw_leads)
 
+    # Normalize and validate
+    valid_leads, invalid_leads, _ = normalize_batch(
+        unique_leads, validate_dns=validate_dns
+    )
+
     return ParseResult(
-        parsed=unique_leads,
+        parsed=valid_leads,
         duplicates_removed=duplicates_removed,
-        invalid_removed=0,
+        invalid_removed=len(invalid_leads),
         total_submitted=total_submitted,
     )
 
