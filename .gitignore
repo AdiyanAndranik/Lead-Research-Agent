@@ -68,3 +68,6 @@ celerybeat.pid
 alembic.ini
 uv.lock
 alembic/
+
+docker-compose.override.yml
+.docker/
