@@ -37,7 +37,9 @@ class Lead(Base):
     linkedin_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     status: Mapped[LeadStatus] = mapped_column(
-        Enum(LeadStatus), default=LeadStatus.QUEUED, nullable=False
+        Enum(LeadStatus, name="leadstatus", create_type=False),
+        default=LeadStatus.QUEUED,
+        nullable=False,
     )
 
     industry: Mapped[str | None] = mapped_column(String(255), nullable=True)

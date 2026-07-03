@@ -32,13 +32,17 @@ class EmailDraft(Base):
         ForeignKey("leads.id"), nullable=False
     )
 
-    variant: Mapped[EmailVariant] = mapped_column(Enum(EmailVariant), nullable=False)
+    variant: Mapped[EmailVariant] = mapped_column(
+        Enum(EmailVariant, name="emailvariant", create_type=False),
+        nullable=False,
+    )    
     is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
     subject_line: Mapped[str] = mapped_column(String(500), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
 
     status: Mapped[EmailStatus] = mapped_column(
-        Enum(EmailStatus), default=EmailStatus.DRAFT
+        Enum(EmailStatus, name="emailstatus", create_type=False),
+        default=EmailStatus.DRAFT,
     )
     reviewer_edits: Mapped[str | None] = mapped_column(Text, nullable=True)
     edit_distance: Mapped[int | None] = mapped_column(Integer, nullable=True)

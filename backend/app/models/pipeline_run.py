@@ -24,7 +24,9 @@ class PipelineRun(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     status: Mapped[RunStatus] = mapped_column(
-        Enum(RunStatus), default=RunStatus.PENDING, nullable=False
+        Enum(RunStatus, name="runstatus", create_type=False),
+        default=RunStatus.PENDING,
+        nullable=False,
     )
     total_leads: Mapped[int] = mapped_column(Integer, default=0)
     processed_leads: Mapped[int] = mapped_column(Integer, default=0)

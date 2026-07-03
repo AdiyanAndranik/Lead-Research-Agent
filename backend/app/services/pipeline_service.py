@@ -72,31 +72,24 @@ def dispatch_lead_tasks(
     pipeline_run_id: str,
     lead_ids: list[str],
 ) -> list[str]:
-    """
-    Dispatch one Celery task per lead, then chain a finalize task.
-    Returns list of Celery task IDs for tracking.
-    """
-    from celery import chord
+    from celery import group
     from backend.app.tasks.lead_tasks import (
         process_lead_task,
         finalize_pipeline_run_task,
     )
 
-    # Create a chord: run all lead tasks in parallel,
-    # then call finalize when ALL are done
-    lead_signatures = [
-        process_lead_task.s(lead_id, pipeline_run_id)
-        for lead_id in lead_ids
-    ]
+    # Send tasks individually and collect real task IDs
+    task_ids = []
+    for lead_id in lead_ids:
+        result = process_lead_task.delay(lead_id, pipeline_run_id)
+        task_ids.append(result.id)
 
-    pipeline_chord = chord(lead_signatures)(
-        finalize_pipeline_run_task.s(pipeline_run_id)
+    # Fire finalize task separately after a delay
+    finalize_pipeline_run_task.apply_async(
+        args=[pipeline_run_id],
+        countdown=len(lead_ids) * 30,  # rough estimate
     )
 
-    task_ids = [sig.id for sig in lead_signatures]
-    logger.info(
-        f"Dispatched {len(task_ids)} tasks for pipeline run {pipeline_run_id}"
-    )
     return task_ids
 
 
