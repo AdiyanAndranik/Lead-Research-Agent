@@ -32,3 +32,6 @@ langsmith
 python-multipart
 tenacity
 structlog
+
+pytest-asyncio
+httpx
