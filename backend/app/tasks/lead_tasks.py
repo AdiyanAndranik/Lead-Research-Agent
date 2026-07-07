@@ -66,12 +66,12 @@ class BaseTaskWithRetry(Task):
 def process_lead_task(self, lead_id: str, pipeline_run_id: str) -> dict:
     """
     Main pipeline task for a single lead.
-    Orchestrates: research → score → generate email.
-
-    This is a placeholder that will be filled in Milestone 3
-    when we build the LangGraph agent. For now it updates
-    lead status so we can verify the queue works end to end.
+    Runs the full research → score → email pipeline.
     """
+    import asyncio
+    from agent.graph import research_graph
+    from agent.state import ResearchState
+
     session = get_sync_session()
     try:
         lead = session.query(Lead).filter(Lead.id == uuid.UUID(lead_id)).first()
@@ -86,11 +86,43 @@ def process_lead_task(self, lead_id: str, pipeline_run_id: str) -> dict:
         lead.updated_at = datetime.now(timezone.utc)
         session.commit()
 
-        # ── Milestone 3: research agent will be called here ──
+        # Build initial state
+        initial_state = ResearchState(
+            lead_id=lead_id,
+            company_name=lead.company_name,
+            domain=lead.domain,
+            linkedin_url=lead.linkedin_url,
+        )
+
+        # Run the research graph
+        final_state = asyncio.run(research_graph.ainvoke(initial_state))
+
+        # Persist research results
+        from backend.app.models.research_result import ResearchResult
+        research = ResearchResult(
+            id=uuid.uuid4(),
+            lead_id=uuid.UUID(lead_id),
+            company_description=final_state.get("company_description"),
+            product_offering=final_state.get("product_offering"),
+            pain_points=final_state.get("pain_points", []),
+            funding_signals=final_state.get("funding_signals"),
+            tech_stack={"detected": final_state.get("tech_signals", [])},
+            tools_used=final_state.get("tools_used", []),
+            created_at=datetime.now(timezone.utc),
+        )
+        session.add(research)
+
+        # Update lead with industry and size
+        lead.industry = final_state.get("industry")
+        lead.size_estimate = final_state.get("size_estimate")
+        lead.tech_signals = final_state.get("tech_signals", [])
+        lead.status = LeadStatus.SCORING
+        lead.updated_at = datetime.now(timezone.utc)
+        session.commit()
+
         # ── Milestone 4: scoring will be called here ──
         # ── Milestone 5: email generation will be called here ──
 
-        # For now — mark as awaiting review to verify queue works
         lead.status = LeadStatus.AWAITING_REVIEW
         lead.updated_at = datetime.now(timezone.utc)
         session.commit()
@@ -99,6 +131,7 @@ def process_lead_task(self, lead_id: str, pipeline_run_id: str) -> dict:
             "status": "success",
             "lead_id": lead_id,
             "company_name": lead.company_name,
+            "research_complete": True,
         }
 
     except Exception as exc:

@@ -27,6 +27,7 @@ langchain
 langchain-groq
 langgraph
 langsmith
+langchain-community
 
 # Utilities
 python-multipart
