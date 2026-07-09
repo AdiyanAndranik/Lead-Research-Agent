@@ -84,3 +84,54 @@ async def get_pipeline_leads(
             for lead in leads
         ],
     }
+
+
+@router.get(
+    "/{run_id}/scores",
+    summary="Get scores for all leads in a pipeline run",
+)
+async def get_pipeline_scores(
+    run_id: str,
+    session: AsyncSession = Depends(get_db),
+):
+    import uuid
+    from sqlalchemy import select
+    from backend.app.models.score_result import ScoreResult
+
+    try:
+        run_uuid = uuid.UUID(run_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid pipeline run ID.")
+
+    result = await session.execute(
+        select(Lead, ScoreResult)
+        .join(ScoreResult, Lead.id == ScoreResult.lead_id)
+        .where(Lead.pipeline_run_id == run_uuid)
+        .order_by(ScoreResult.overall_score.desc())
+    )
+    rows = result.fetchall()
+
+    return {
+        "pipeline_run_id": run_id,
+        "total_scored": len(rows),
+        "scores": [
+            {
+                "company_name": lead.company_name,
+                "domain": lead.domain,
+                "overall_score": score.overall_score,
+                "passed_threshold": score.passed_threshold,
+                "recommended_action": score.recommended_action,
+                "confidence": score.confidence,
+                "reasoning": score.reasoning,
+                "dimensions": {
+                    "icp_fit": score.icp_fit_score,
+                    "pain_alignment": score.pain_alignment_score,
+                    "tech_maturity": score.tech_maturity_score,
+                    "timing": score.timing_score,
+                    "budget_signal": score.budget_signal_score,
+                },
+                "dimension_reasoning": score.dimension_reasoning,
+            }
+            for lead, score in rows
+        ],
+    }

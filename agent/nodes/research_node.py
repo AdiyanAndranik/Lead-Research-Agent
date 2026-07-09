@@ -1,10 +1,11 @@
 import logging
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from agent.state import ResearchState
 from agent.llm import get_research_llm
 from agent.tools.web_scraper import scrape_homepage, scrape_about_page
 from agent.tools.news_search import search_company_news, search_company_funding
 from agent.tools.tech_detector import detect_tech_stack
+from agent.retry_utils import with_groq_retry
 
 logger = logging.getLogger(__name__)
 
@@ -35,17 +36,21 @@ Focus on finding:
 Be efficient — use 2-4 tools maximum per company. Stop when you have enough context."""
 
 
+@with_groq_retry(max_retries=4, base_delay=15.0)
+async def _call_llm_with_retry(llm_with_tools, messages):
+    """LLM call wrapped with rate limit retry logic."""
+    return await llm_with_tools.ainvoke(messages)
+
+
 async def research_node(state: ResearchState) -> dict:
     """
     Main research node — uses LLM with tools to research a company.
-    Runs tool calls in a loop until the LLM decides it has enough information.
     """
     logger.info(f"Research node: {state.company_name}")
 
     llm = get_research_llm()
     llm_with_tools = llm.bind_tools(RESEARCH_TOOLS)
 
-    # Build initial message
     domain_info = f" (website: {state.domain})" if state.domain else ""
     user_message = HumanMessage(
         content=f"Research this company for me: {state.company_name}{domain_info}"
@@ -59,28 +64,32 @@ async def research_node(state: ResearchState) -> dict:
     tools_used = list(state.tools_used)
     iteration = state.iteration_count
 
-    # Agentic loop — keep calling tools until LLM stops
     while iteration < state.max_iterations:
-        response = await llm_with_tools.ainvoke(messages)
+        try:
+            response = await _call_llm_with_retry(llm_with_tools, messages)
+        except Exception as e:
+            logger.error(f"LLM call failed after retries: {e}")
+            return {
+                "messages": messages[2:],
+                "tools_used": tools_used,
+                "iteration_count": iteration,
+                "error": str(e),
+            }
+
         messages.append(response)
         iteration += 1
 
-        # No tool calls — LLM is done researching
         if not response.tool_calls:
             break
 
-        # Execute each tool call
         for tool_call in response.tool_calls:
             tool_name = tool_call["name"]
             tool_args = tool_call["args"]
             tools_used.append(tool_name)
 
             logger.info(f"Calling tool: {tool_name} with {tool_args}")
-
-            # Find and execute the matching tool
             tool_result = await _execute_tool(tool_name, tool_args)
 
-            from langchain_core.messages import ToolMessage
             messages.append(
                 ToolMessage(
                     content=str(tool_result),
@@ -89,14 +98,13 @@ async def research_node(state: ResearchState) -> dict:
             )
 
     return {
-        "messages": messages[2:],  # exclude system + first user message
+        "messages": messages[2:],
         "tools_used": tools_used,
         "iteration_count": iteration,
     }
 
 
 async def _execute_tool(tool_name: str, tool_args: dict) -> str:
-    """Execute a tool by name and return its output."""
     tool_map = {
         "scrape_homepage": scrape_homepage,
         "scrape_about_page": scrape_about_page,
@@ -104,17 +112,12 @@ async def _execute_tool(tool_name: str, tool_args: dict) -> str:
         "search_company_funding": search_company_funding,
         "detect_tech_stack": detect_tech_stack,
     }
-
     tool_fn = tool_map.get(tool_name)
     if not tool_fn:
         return f"Unknown tool: {tool_name}"
-
     try:
-        result = await tool_fn.ainvoke(tool_args)
-        return str(result)
+        return str(await tool_fn.ainvoke(tool_args))
     except Exception as e:
         logger.error(f"Tool {tool_name} failed: {e}")
         return f"Tool {tool_name} failed: {str(e)}"
-    
-
     

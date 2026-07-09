@@ -43,5 +43,15 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         return self.app_env == "production"
     
+    def configure_langsmith(self) -> None:
+        """Set LangSmith environment variable for tracing."""
+        import os
+        if self.langchain_api_key:
+            os.environ["LANGCHAIN_TRACING_V2"] = "true"
+            os.environ["LANGCHAIN_API_KEY"] = self.langchain_api_key
+            os.environ["LANGCHAIN_PROJECT"] = self.langchain_project
+            os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
+            
+    
 settings = Settings()
 

@@ -10,6 +10,9 @@ from backend.app.core.config import settings
 from backend.app.models.lead import Lead, LeadStatus
 from backend.app.models.pipeline_run import PipelineRun, RunStatus
 
+
+settings.configure_langsmith()
+
 logger = logging.getLogger(__name__)
 
 # Sync engine for Celery workers (Celery doesn't support async)
@@ -97,7 +100,17 @@ def process_lead_task(self, lead_id: str, pipeline_run_id: str) -> dict:
         # Run the research graph
         final_state = asyncio.run(research_graph.ainvoke(initial_state))
 
-        # Persist research results
+        from agent.validators import validate_research_result
+        validation = validate_research_result(final_state)
+
+        if not validation.is_valid:
+            logger.warning(
+                f"Research quality low for {lead.company_name} "
+                f"(score: {validation.quality_score:.2f}): {validation.issues}"
+            )
+
+        # Persist research results regardless of quality
+        # (low quality leads will get lower scores later)
         from backend.app.models.research_result import ResearchResult
         research = ResearchResult(
             id=uuid.uuid4(),
@@ -108,22 +121,92 @@ def process_lead_task(self, lead_id: str, pipeline_run_id: str) -> dict:
             funding_signals=final_state.get("funding_signals"),
             tech_stack={"detected": final_state.get("tech_signals", [])},
             tools_used=final_state.get("tools_used", []),
+            scrape_duration_seconds=validation.quality_score,  # reuse field as quality proxy
             created_at=datetime.now(timezone.utc),
         )
         session.add(research)
 
-        # Update lead with industry and size
-        lead.industry = final_state.get("industry")
-        lead.size_estimate = final_state.get("size_estimate")
+        # Update lead
+        size_estimate = final_state.get("size_estimate") or ""
+        lead.industry = (final_state.get("industry") or "")[:254]
+        lead.size_estimate = size_estimate[:99] if size_estimate else None
         lead.tech_signals = final_state.get("tech_signals", [])
         lead.status = LeadStatus.SCORING
         lead.updated_at = datetime.now(timezone.utc)
         session.commit()
 
-        # ── Milestone 4: scoring will be called here ──
+        # ── Milestone 4: Lead scoring ──
+        import asyncio as _asyncio
+        from agent.scoring import score_lead
+        from backend.app.models.score_result import ScoreResult
+
+        # Get pipeline run config for threshold
+        pipeline_run = session.query(PipelineRun).filter(
+            PipelineRun.id == uuid.UUID(pipeline_run_id)
+        ).first()
+        min_threshold = pipeline_run.min_score_threshold if pipeline_run else 6
+
+        # Build research dict for scorer
+        research_data = {
+            "company_description": research.company_description,
+            "product_offering": research.product_offering,
+            "industry": lead.industry,
+            "size_estimate": lead.size_estimate,
+            "pain_points": research.pain_points or [],
+            "funding_signals": research.funding_signals,
+            "tech_signals": lead.tech_signals or [],
+        }
+
+        score_output = _asyncio.run(score_lead(
+            company_name=lead.company_name,
+            research=research_data,
+            min_score_threshold=min_threshold,
+        ))
+
+        # Persist score result
+        score_record = ScoreResult(
+            id=uuid.uuid4(),
+            lead_id=uuid.UUID(lead_id),
+            overall_score=score_output.overall_score,
+            icp_fit_score=score_output.icp_fit.score,
+            pain_alignment_score=score_output.pain_alignment.score,
+            tech_maturity_score=score_output.tech_maturity.score,
+            timing_score=score_output.timing.score,
+            budget_signal_score=score_output.budget_signal.score,
+            reasoning=score_output.overall_reasoning,
+            dimension_reasoning={
+                "icp_fit": score_output.icp_fit.reasoning,
+                "pain_alignment": score_output.pain_alignment.reasoning,
+                "tech_maturity": score_output.tech_maturity.reasoning,
+                "timing": score_output.timing.reasoning,
+                "budget_signal": score_output.budget_signal.reasoning,
+            },
+            recommended_action=score_output.recommended_action,
+            confidence=score_output.confidence,
+            passed_threshold=score_output.passed_threshold,
+            created_at=datetime.now(timezone.utc),
+        )
+        session.add(score_record)
+
+        logger.info(
+            f"Scored {lead.company_name}: {score_output.overall_score}/10 "
+            f"({'PASS' if score_output.passed_threshold else 'FAIL'}) "
+            f"— {score_output.recommended_action}"
+        )
+
+        # Update lead status based on score
+        if score_output.passed_threshold:
+            lead.status = LeadStatus.GENERATING_EMAIL
+        else:
+            lead.status = LeadStatus.SKIPPED
+
+        lead.updated_at = datetime.now(timezone.utc)
+        session.commit()
+
         # ── Milestone 5: email generation will be called here ──
 
-        lead.status = LeadStatus.AWAITING_REVIEW
+        if score_output.passed_threshold:
+            lead.status = LeadStatus.AWAITING_REVIEW
         lead.updated_at = datetime.now(timezone.utc)
         session.commit()
 
