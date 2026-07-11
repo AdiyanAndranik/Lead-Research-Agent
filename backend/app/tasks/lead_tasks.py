@@ -136,7 +136,6 @@ def process_lead_task(self, lead_id: str, pipeline_run_id: str) -> dict:
         session.commit()
 
         # ── Milestone 4: Lead scoring ──
-        import asyncio as _asyncio
         from agent.scoring import score_lead
         from backend.app.models.score_result import ScoreResult
 
@@ -157,7 +156,7 @@ def process_lead_task(self, lead_id: str, pipeline_run_id: str) -> dict:
             "tech_signals": lead.tech_signals or [],
         }
 
-        score_output = _asyncio.run(score_lead(
+        score_output = asyncio.run(score_lead(
             company_name=lead.company_name,
             research=research_data,
             min_score_threshold=min_threshold,
@@ -203,7 +202,48 @@ def process_lead_task(self, lead_id: str, pipeline_run_id: str) -> dict:
         lead.updated_at = datetime.now(timezone.utc)
         session.commit()
 
-        # ── Milestone 5: email generation will be called here ──
+        # ── Milestone 5: Email generation ──
+        if score_output.passed_threshold:
+            from agent.email_generator import generate_emails
+            from backend.app.models.email_draft import EmailDraft, EmailVariant, EmailStatus
+
+            email_output = asyncio.run(generate_emails(
+                company_name=lead.company_name,
+                research=research_data,
+                score_reasoning=score_output.overall_reasoning,
+                tone=pipeline_run.email_tone if pipeline_run else "conversational",
+                angle=pipeline_run.email_angle if pipeline_run else "pain",
+            ))
+
+            variant_map = {
+                "pain_first": EmailVariant.PAIN_FIRST,
+                "opportunity_first": EmailVariant.OPPORTUNITY_FIRST,
+                "social_proof_first": EmailVariant.SOCIAL_PROOF_FIRST,
+            }
+
+            for draft in email_output.drafts:
+                is_primary = draft.variant == email_output.primary_variant
+                email_record = EmailDraft(
+                    id=uuid.uuid4(),
+                    lead_id=uuid.UUID(lead_id),
+                    variant=variant_map.get(draft.variant, EmailVariant.PAIN_FIRST),
+                    is_primary=is_primary,
+                    subject_line=draft.subject_line[:499],
+                    body=draft.body,
+                    status=EmailStatus.DRAFT,
+                    word_count=draft.word_count,
+                    personalization_signals_count=len(draft.personalization_signals),
+                    quality_flags=email_output.quality_flags,
+                    created_at=datetime.now(timezone.utc),
+                    updated_at=datetime.now(timezone.utc),
+                )
+                session.add(email_record)
+
+            session.commit()
+            logger.info(
+                f"Generated {len(email_output.drafts)} email variants "
+                f"for {lead.company_name}"
+            )
 
         if score_output.passed_threshold:
             lead.status = LeadStatus.AWAITING_REVIEW

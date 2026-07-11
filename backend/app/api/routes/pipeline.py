@@ -135,3 +135,95 @@ async def get_pipeline_scores(
             for lead, score in rows
         ],
     }
+
+
+@router.get(
+    "/{run_id}/emails",
+    summary="Get all email drafts for a pipeline run",
+)
+async def get_pipeline_emails(
+    run_id: str,
+    session: AsyncSession = Depends(get_db),
+):
+    import uuid
+    from sqlalchemy import select
+    from backend.app.models.email_draft import EmailDraft
+
+    try:
+        run_uuid = uuid.UUID(run_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid pipeline run ID.")
+
+    result = await session.execute(
+        select(Lead, EmailDraft)
+        .join(EmailDraft, Lead.id == EmailDraft.lead_id)
+        .where(Lead.pipeline_run_id == run_uuid)
+        .where(EmailDraft.is_primary == True)
+        .order_by(Lead.company_name)
+    )
+    rows = result.fetchall()
+
+    return {
+        "pipeline_run_id": run_id,
+        "total_emails": len(rows),
+        "emails": [
+            {
+                "company_name": lead.company_name,
+                "domain": lead.domain,
+                "variant": email.variant.value,
+                "subject_line": email.subject_line,
+                "body": email.body,
+                "word_count": email.word_count,
+                "personalization_signals_count": email.personalization_signals_count,
+                "quality_flags": email.quality_flags,
+                "status": email.status.value,
+            }
+            for lead, email in rows
+        ],
+    }
+
+
+@router.get(
+    "/{run_id}/leads/{lead_id}/emails",
+    summary="Get all email variants for a specific lead",
+)
+async def get_lead_emails(
+    run_id: str,
+    lead_id: str,
+    session: AsyncSession = Depends(get_db),
+):
+    import uuid
+    from sqlalchemy import select
+    from backend.app.models.email_draft import EmailDraft
+
+    try:
+        lead_uuid = uuid.UUID(lead_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid lead ID.")
+
+    result = await session.execute(
+        select(EmailDraft)
+        .where(EmailDraft.lead_id == lead_uuid)
+        .order_by(EmailDraft.is_primary.desc())
+    )
+    drafts = result.scalars().all()
+
+    if not drafts:
+        raise HTTPException(status_code=404, detail="No emails found for this lead.")
+
+    return {
+        "lead_id": lead_id,
+        "total_variants": len(drafts),
+        "variants": [
+            {
+                "variant": d.variant.value,
+                "is_primary": d.is_primary,
+                "subject_line": d.subject_line,
+                "body": d.body,
+                "word_count": d.word_count,
+                "status": d.status.value,
+                "quality_flags": d.quality_flags,
+            }
+            for d in drafts
+        ],
+    }
