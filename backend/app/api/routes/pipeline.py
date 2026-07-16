@@ -168,6 +168,7 @@ async def get_pipeline_emails(
         "total_emails": len(rows),
         "emails": [
             {
+                "lead_id": str(lead.id),
                 "company_name": lead.company_name,
                 "domain": lead.domain,
                 "variant": email.variant.value,
@@ -227,3 +228,110 @@ async def get_lead_emails(
             for d in drafts
         ],
     }
+
+
+@router.patch(
+    "/{run_id}/leads/{lead_id}/emails/{email_id}",
+    summary="Update email draft — approve, reject, or edit",
+)
+async def update_email_draft(
+    run_id: str,
+    lead_id: str,
+    email_id: str,
+    body: dict,
+    session: AsyncSession = Depends(get_db),
+):
+    import uuid
+    from sqlalchemy import select
+    from backend.app.models.email_draft import EmailDraft, EmailStatus
+
+    try:
+        email_uuid = uuid.UUID(email_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid email ID.")
+
+    result = await session.execute(
+        select(EmailDraft).where(EmailDraft.id == email_uuid)
+    )
+    draft = result.scalar_one_or_none()
+    if not draft:
+        raise HTTPException(status_code=404, detail="Email draft not found.")
+
+    # Apply updates
+    if "status" in body:
+        try:
+            draft.status = EmailStatus(body["status"])
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid status: {body['status']}")
+
+    if "subject_line" in body:
+        draft.subject_line = body["subject_line"][:499]
+
+    if "body" in body:
+        # Track edit distance from original
+        original = draft.body
+        new_body = body["body"]
+        draft.reviewer_edits = new_body
+        # Simple edit distance proxy: character diff percentage
+        diff = abs(len(new_body) - len(original))
+        draft.edit_distance = diff
+        draft.body = new_body
+
+    from datetime import datetime, timezone
+    draft.updated_at = datetime.now(timezone.utc)
+    await session.commit()
+
+    return {
+        "email_id": email_id,
+        "status": draft.status.value,
+        "message": f"Email {draft.status.value}.",
+    }
+
+
+@router.get(
+    "/{run_id}/leads/{lead_id}/emails",
+    summary="Get all email variants for a specific lead",
+)
+async def get_lead_emails(
+    run_id: str,
+    lead_id: str,
+    session: AsyncSession = Depends(get_db),
+):
+    import uuid
+    from sqlalchemy import select
+    from backend.app.models.email_draft import EmailDraft
+
+    try:
+        lead_uuid = uuid.UUID(lead_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid lead ID.")
+
+    result = await session.execute(
+        select(EmailDraft)
+        .where(EmailDraft.lead_id == lead_uuid)
+        .order_by(EmailDraft.is_primary.desc())
+    )
+    drafts = result.scalars().all()
+
+    if not drafts:
+        raise HTTPException(status_code=404, detail="No emails found for this lead.")
+
+    return {
+        "lead_id": lead_id,
+        "total_variants": len(drafts),
+        "variants": [
+            {
+                "id": str(d.id),
+                "variant": d.variant.value,
+                "is_primary": d.is_primary,
+                "subject_line": d.subject_line,
+                "body": d.body,
+                "word_count": d.word_count,
+                "status": d.status.value,
+                "quality_flags": d.quality_flags,
+                "edit_distance": d.edit_distance,
+            }
+            for d in drafts
+        ],
+    }
+

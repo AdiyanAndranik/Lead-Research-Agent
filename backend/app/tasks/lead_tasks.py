@@ -40,12 +40,7 @@ class BaseTaskWithRetry(Task):
 
     def on_failure(self, exc, task_id, args, kwargs, einfo):
         logger.error(
-            f"Task {self.name} failed permanently",
-            extra={
-                "task_id": task_id,
-                "exception": str(exc),
-                "args": args,
-            },
+            f"Task {self.name} [{task_id}] failed permanently: {exc}"
         )
 
     def on_retry(self, exc, task_id, args, kwargs, einfo):
